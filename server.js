@@ -51,7 +51,7 @@ const locationCategories = {
     { name: 'Mumbai Airport International', address: 'Chhatrapati Shivaji Airport T2, Mumbai', type: 'airport', coordinates: { lat: 19.0988, lng: 72.8681 } },
     { name: 'Delhi Airport', address: 'Indira Gandhi International Airport, Delhi', type: 'airport', coordinates: { lat: 28.5562, lng: 77.1000 } },
     { name: 'Bangalore Airport', address: 'Kempegowda International Airport, Bangalore', type: 'airport', coordinates: { lat: 13.1986, lng: 77.7066 } }
-  ],
+  ],  
   stations: [
     { name: 'Pune Railway Station', address: 'Pune Junction, Pune', type: 'station', coordinates: { lat: 18.5314, lng: 73.8747 } },
     { name: 'Mumbai Central', address: 'Mumbai Central Railway Station, Mumbai', type: 'station', coordinates: { lat: 18.9708, lng: 72.8205 } },
@@ -339,10 +339,16 @@ app.post('/webhook', async (req, res) => {
 async function handleWhatsAppMessage(from, text, msg) {
   const state = userStates[from];
 
-  // Handle initial greeting
-  if (text.includes('hi') || text.includes('hello') || text.includes('start')) {
+  // Show welcome message only if user has no state at all (first message)
+  if (!state || !state.stage) {
     userStates[from] = { stage: 'welcome' };
     return sendWhatsAppWelcomeMessage(from);
+  }
+
+  // Handle interactive button responses
+  if (msg.interactive?.button_reply?.id) {
+    const buttonId = msg.interactive.button_reply.id;
+    return handleEnhancedButtonResponse(from, buttonId);
   }
 
   // Handle trip booking initiation
@@ -365,6 +371,21 @@ async function handleWhatsAppMessage(from, text, msg) {
   // Handle list responses (for location and vehicle selection)
   if (msg.interactive?.list_reply?.id) {
     const listId = msg.interactive.list_reply.id;
+
+
+    //From Here
+    //Changes in handleWhatsAppMessage function from Here
+    // Custom handling for new pickup GPS/search options
+    if (state.stage === 'pickup_gps_or_search') {
+      if (listId === 'pickup_share_gps_now') {
+        state.stage = 'pickup_gps';
+        return requestGPSLocation(from, 'pickup');
+      } else if (listId === 'pickup_search_location') {
+        state.stage = 'pickup_search';
+        return sendMessage(from, '🔍 *SEARCH PICKUP LOCATION*\n\nType your pickup location below:');
+      }
+    }
+    //Till Here
     return handleEnhancedListResponse(from, listId);
   }
 
@@ -432,6 +453,40 @@ async function handleWhatsAppMessage(from, text, msg) {
 }
 
 // ==================== ENHANCED WHATSAPP UI FUNCTIONS ====================
+
+async function sendMobileNumberConfirmationButtons(to) {
+  const message = {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `Use your WhatsApp number (${to}) for booking?`
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: 'use_whatsapp_number',
+              title: 'Use this number'
+            }
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'enter_different_number',
+              title: 'Other number'
+            }
+          }
+        ]
+      }
+    }
+  };
+  return sendInteractiveMessage(to, message);
+}
+
 
 async function sendWhatsAppWelcomeMessage(to) {
   const message = {
@@ -568,6 +623,49 @@ async function sendPickupFirstTime(to) {
   return sendInteractiveMessage(to, message);
 }
 
+//From Here
+//Changes in sendPickupFirstTime function from Here
+
+// New function to present both GPS and searchbar for pickup
+async function sendGPSOrSearchPickupOptions(to) {
+  // WhatsApp interactive list message with two main options
+  const message = {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: '📍 *SHARE PICKUP LOCATION*\n\nChoose how you want to set your pickup location:'
+      },
+      action: {
+        button: 'Choose Option',
+        sections: [
+          {
+            title: 'Quick Options',
+            rows: [
+              {
+                id: 'pickup_share_gps_now',
+                title: '📍 Share Current Location',
+                description: 'Send your live GPS location in WhatsApp'
+              },
+              {
+                id: 'pickup_search_location',
+                title: '🔍 Search Location',
+                description: 'Search and select your pickup location'
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  return sendInteractiveMessage(to, message);
+}
+
+//Till Here
+
+//Changes in sendPickupWithHistory function from Here
 async function sendPickupWithHistory(to, userHistory) {
   const recentLocations = userHistory.recent.slice(0, 3).map((loc, index) => ({
     id: `recent_pickup_${index}`,
@@ -886,11 +984,12 @@ async function sendSmartDropSuggestions(to, pickup) {
   const suggestions = getPopularRoutesFromPickup(pickup);
   
   if (suggestions.length === 0) {
-    // Fallback to regular drop selection
+    // Fallback to dynamic drop search only (no static options)
     state.stage = 'drop_search';
-    const dropMessage = `📍 *DROP LOCATION*\n\n✅ **Pickup:** ${pickup}\n\nType your destination or choose from options below:`;
+    const dropMessage = `📍 *DROP LOCATION*\n\n✅ **Pickup:** ${pickup}\n\n*Type your drop location below:*\n\n🔍 _As you type, you'll get live suggestions from Google Maps. Select your destination from the list that appears._`;
     await sendMessage(to, dropMessage);
-    return sendLocationSuggestions(to, [], 'drop', '📍 Choose from popular destinations:');
+    // Only allow dynamic search: user must type, and suggestions come live from Google Places API
+    return;
   }
 
   // Build sections with popular routes
@@ -961,6 +1060,24 @@ async function handleEnhancedButtonResponse(from, buttonId) {
   const state = userStates[from];
 
   switch (buttonId) {
+    case 'use_whatsapp_number': {
+      // Format the WhatsApp number to +91 XXXXXXXXXX
+      let formattedNumber = from;
+      if (from.startsWith('91') && from.length === 12) {
+        formattedNumber = '+91 ' + from.slice(2);
+      } else if (from.length === 10) {
+        formattedNumber = '+91 ' + from;
+      } else if (!from.startsWith('+')) {
+        formattedNumber = '+' + from;
+      }
+      state.mobile = from;
+      state.stage = 'confirm';
+      await sendMessage(from, `📱 Using your number: *${formattedNumber}* for booking.`);
+      return showBookingSummary(from);
+    }
+    case 'enter_different_number':
+      state.stage = 'mobile';
+      return sendMessage(from, '📱 *MOBILE NUMBER*\n\nPlease enter your mobile number:\n\n📝 *Example:* 9876543210\n💡 *Note:* 10-digit Indian number');
     case 'book_trip':
       state.stage = 'tripType';
       return sendTripTypeButtons(from);
@@ -977,9 +1094,11 @@ async function handleEnhancedButtonResponse(from, buttonId) {
       state.tripType = buttonId;
       return sendEnhancedPickupOptions(from);
 
+
+      //Changes in handleEnhancedButtonResponse function from Here
     case 'share_gps_pickup':
-      state.stage = 'pickup_gps';
-      return requestGPSLocation(from, 'pickup');
+      state.stage = 'pickup_gps_or_search';
+      return sendGPSOrSearchPickupOptions(from);
 
     case 'categories_pickup':
       return sendLocationCategories(from, 'pickup');
@@ -1174,11 +1293,10 @@ async function handleEnhancedListResponse(from, listId) {
   // Handle vehicle selection
   else if (listId === 'sedan' || listId === 'suv' || listId === 'tempo') {
     state.vehicle = listId;
-    state.stage = 'mobile';
-    return sendMessage(from, '📱 *MOBILE NUMBER*\n\nPlease enter your mobile number:\n\n📝 *Example:* 9876543210\n💡 *Note:* 10-digit Indian number');
+    state.stage = 'mobile_confirm';
+    return sendMobileNumberConfirmationButtons(from);
   }
-  
-  return sendMessage(from, '❌ Invalid selection. Please try again or type "trip" to restart.');
+  // Do not send any message for unmatched listId (prevents unnecessary error message)
 }
 
 // ==================== CATEGORY AND SMART SUGGESTION HANDLERS ====================
