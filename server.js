@@ -498,10 +498,10 @@ async function sendWhatsAppWelcomeMessage(to) {
       body: {
         text: '🚗 *Welcome to WorldTripLink!* 😊\n\nWe\'re excited to assist you with your travel needs. Choose an option below:'
       },
-      action: {
+      action: {   
         buttons: [
           {
-            type: 'reply',
+            type: 'reply',        
             reply: {
               id: 'book_trip',
               title: '🚗 Book a Trip'
